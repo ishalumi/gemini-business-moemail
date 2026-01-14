@@ -1,8 +1,10 @@
 services:
   gemini-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/ishalumi/gemini-business-moemail:latest
+    # 如需本地构建，注释上面的 image 并取消下面的注释
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     ports:
       - "7860:7860"
     volumes:
@@ -10,7 +12,6 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    # 限制资源使用（因为包含 Chrome）
     deploy:
       resources:
         limits:
