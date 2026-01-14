@@ -17,9 +17,3 @@ services:
         limits:
           cpus: '2'
           memory: 2G
-    networks:
-      - 1panel-network
-
-networks:
-  1panel-network:
-    external: true
