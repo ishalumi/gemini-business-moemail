@@ -77,8 +77,8 @@ class GeminiAuthHelper:
                     data = r.json()
                     messages = data.get('messages', [])
                     for msg in messages:
-                        # 检查发件人是否为 Google
-                        sender = msg.get('from', '')
+                        # 检查发件人是否为 Google（兼容 from 和 from_address 字段）
+                        sender = msg.get('from_address', '') or msg.get('from', '')
                         if self.config.google_mail in sender or 'google' in sender.lower():
                             # 从 HTML 或纯文本中提取验证码
                             html = msg.get('html', '') or msg.get('content', '')
@@ -91,8 +91,8 @@ class GeminiAuthHelper:
                                     # 简单去除 HTML 标签
                                     text = re.sub(r'<[^>]+>', ' ', html)
 
-                                # 正则匹配 6 位数字验证码
-                                codes = re.findall(r'\b\d{6}\b', text)
+                                # 正则匹配 6 位验证码（数字或字母）
+                                codes = re.findall(r'\b[A-Z0-9]{6}\b', text)
                                 if codes:
                                     logger.info(f"✅ 获取到验证码: {codes[0]}")
                                     return codes[0]

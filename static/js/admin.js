@@ -287,6 +287,11 @@ let currentConfig = null;
                     document.getElementById('setting-cooldown').value = settings.retry?.rate_limit_cooldown_seconds || 600;
                     document.getElementById('setting-cache-ttl').value = settings.retry?.session_cache_ttl_seconds || 3600;
 
+                    // 自动注册配置
+                    document.getElementById('setting-auto-register-enabled').checked = settings.retry?.auto_register_enabled ?? false;
+                    document.getElementById('setting-auto-register-count').value = settings.retry?.auto_register_count || 1;
+                    document.getElementById('setting-auto-register-timeout').value = settings.retry?.auto_register_timeout || 120;
+
                     // 公开展示配置
                     document.getElementById('setting-logo-url').value = settings.public_display?.logo_url || '';
                     document.getElementById('setting-chat-url').value = settings.public_display?.chat_url || '';
@@ -326,7 +331,10 @@ let currentConfig = null;
                             max_account_switch_tries: parseInt(document.getElementById('setting-max-switch').value) || 5,
                             account_failure_threshold: parseInt(document.getElementById('setting-failure-threshold').value) || 3,
                             rate_limit_cooldown_seconds: parseInt(document.getElementById('setting-cooldown').value) || 600,
-                            session_cache_ttl_seconds: parseInt(document.getElementById('setting-cache-ttl').value) || 3600
+                            session_cache_ttl_seconds: parseInt(document.getElementById('setting-cache-ttl').value) || 3600,
+                            auto_register_enabled: document.getElementById('setting-auto-register-enabled').checked,
+                            auto_register_count: parseInt(document.getElementById('setting-auto-register-count').value) || 1,
+                            auto_register_timeout: parseInt(document.getElementById('setting-auto-register-timeout').value) || 120
                         },
                         public_display: {
                             logo_url: document.getElementById('setting-logo-url').value,

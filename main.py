@@ -186,6 +186,11 @@ ACCOUNT_FAILURE_THRESHOLD = config.retry.account_failure_threshold
 RATE_LIMIT_COOLDOWN_SECONDS = config.retry.rate_limit_cooldown_seconds
 SESSION_CACHE_TTL_SECONDS = config.retry.session_cache_ttl_seconds
 
+# ---------- 自动注册配置 ----------
+AUTO_REGISTER_ENABLED = config.retry.auto_register_enabled
+AUTO_REGISTER_COUNT = config.retry.auto_register_count
+AUTO_REGISTER_TIMEOUT = config.retry.auto_register_timeout
+
 # ---------- 模型映射配置 ----------
 MODEL_MAPPING = {
     "gemini-auto": None,
@@ -219,6 +224,75 @@ def get_base_url(request: Request) -> str:
     forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host"))
 
     return f"{forwarded_proto}://{forwarded_host}"
+
+
+async def auto_register_and_wait(count: int, timeout: int, request_id: str = "") -> bool:
+    """
+    自动注册账户并等待完成
+
+    Args:
+        count: 注册数量
+        timeout: 超时时间（秒）
+        request_id: 请求ID（用于日志）
+
+    Returns:
+        True 表示注册成功且有新账户可用，False 表示失败
+    """
+    global multi_account_mgr
+
+    if not _register_service_available:
+        logger.warning(f"[AUTO-REG] [req_{request_id}] 注册服务不可用")
+        return False
+
+    try:
+        register_service = get_register_service()
+
+        # 检查是否已有注册任务在运行
+        current_task = register_service.get_current_task()
+        if current_task and current_task.status.value == "running":
+            logger.info(f"[AUTO-REG] [req_{request_id}] 已有注册任务在运行，等待完成...")
+            task = current_task
+        else:
+            # 启动新的注册任务
+            logger.info(f"[AUTO-REG] [req_{request_id}] 无可用账户，启动自动注册 (数量: {count})")
+            task = await register_service.start_register(count)
+
+        # 等待注册完成
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            task = register_service.get_task(task.id)
+            if not task:
+                logger.error(f"[AUTO-REG] [req_{request_id}] 注册任务丢失")
+                return False
+
+            if task.status.value in ["success", "failed"]:
+                break
+
+            await asyncio.sleep(2)
+
+        # 检查结果
+        if task.success_count > 0:
+            logger.info(f"[AUTO-REG] [req_{request_id}] 注册完成，成功: {task.success_count}, 失败: {task.fail_count}")
+
+            # 重新加载账户配置
+            multi_account_mgr = reload_accounts(
+                multi_account_mgr,
+                http_client,
+                USER_AGENT,
+                ACCOUNT_FAILURE_THRESHOLD,
+                RATE_LIMIT_COOLDOWN_SECONDS,
+                SESSION_CACHE_TTL_SECONDS,
+                global_stats
+            )
+            logger.info(f"[AUTO-REG] [req_{request_id}] 账户已重新加载，当前账户数: {len(multi_account_mgr.accounts)}")
+            return True
+        else:
+            logger.error(f"[AUTO-REG] [req_{request_id}] 注册失败，无成功账户")
+            return False
+
+    except Exception as e:
+        logger.error(f"[AUTO-REG] [req_{request_id}] 自动注册异常: {e}")
+        return False
 
 # ---------- 常量定义 ----------
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
@@ -857,7 +931,10 @@ async def admin_get_settings(request: Request):
             "max_account_switch_tries": config.retry.max_account_switch_tries,
             "account_failure_threshold": config.retry.account_failure_threshold,
             "rate_limit_cooldown_seconds": config.retry.rate_limit_cooldown_seconds,
-            "session_cache_ttl_seconds": config.retry.session_cache_ttl_seconds
+            "session_cache_ttl_seconds": config.retry.session_cache_ttl_seconds,
+            "auto_register_enabled": config.retry.auto_register_enabled,
+            "auto_register_count": config.retry.auto_register_count,
+            "auto_register_timeout": config.retry.auto_register_timeout
         },
         "public_display": {
             "logo_url": config.public_display.logo_url,
@@ -876,6 +953,7 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_MODELS
     global MAX_NEW_SESSION_TRIES, MAX_REQUEST_RETRIES, MAX_ACCOUNT_SWITCH_TRIES
     global ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS, SESSION_CACHE_TTL_SECONDS
+    global AUTO_REGISTER_ENABLED, AUTO_REGISTER_COUNT, AUTO_REGISTER_TIMEOUT
     global SESSION_EXPIRE_HOURS, multi_account_mgr, http_client
 
     try:
@@ -907,6 +985,9 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         ACCOUNT_FAILURE_THRESHOLD = config.retry.account_failure_threshold
         RATE_LIMIT_COOLDOWN_SECONDS = config.retry.rate_limit_cooldown_seconds
         SESSION_CACHE_TTL_SECONDS = config.retry.session_cache_ttl_seconds
+        AUTO_REGISTER_ENABLED = config.retry.auto_register_enabled
+        AUTO_REGISTER_COUNT = config.retry.auto_register_count
+        AUTO_REGISTER_TIMEOUT = config.retry.auto_register_timeout
         SESSION_EXPIRE_HOURS = config.session.expire_hours
 
         # 检查是否需要重建 HTTP 客户端（代理变化）
@@ -1301,8 +1382,23 @@ async def chat_impl(
             logger.info(f"[CHAT] [{account_id}] [req_{request_id}] 继续会话: {google_session[-12:]}")
         else:
             # 新对话：轮询选择可用账户，失败时尝试其他账户
-            max_account_tries = min(MAX_NEW_SESSION_TRIES, len(multi_account_mgr.accounts))
+            max_account_tries = min(MAX_NEW_SESSION_TRIES, len(multi_account_mgr.accounts)) if multi_account_mgr.accounts else 0
             last_error = None
+            account_manager = None
+            google_session = None
+            is_new_conversation = False
+
+            # 如果没有账户，尝试自动注册
+            if max_account_tries == 0:
+                if AUTO_REGISTER_ENABLED:
+                    logger.info(f"[CHAT] [req_{request_id}] 无可用账户，尝试自动注册...")
+                    if await auto_register_and_wait(AUTO_REGISTER_COUNT, AUTO_REGISTER_TIMEOUT, request_id):
+                        # 注册成功，重新计算可用账户数
+                        max_account_tries = min(MAX_NEW_SESSION_TRIES, len(multi_account_mgr.accounts))
+                    else:
+                        raise HTTPException(503, "No accounts available and auto-registration failed")
+                else:
+                    raise HTTPException(503, "No accounts available")
 
             for attempt in range(max_account_tries):
                 try:
@@ -1319,18 +1415,70 @@ async def chat_impl(
                     # 记录账号池状态（账户可用）
                     uptime_tracker.record_request("account_pool", True)
                     break
+                except HTTPException as e:
+                    # 捕获 "No available accounts" 异常，尝试自动注册
+                    if e.status_code == 503 and "No available accounts" in str(e.detail):
+                        if AUTO_REGISTER_ENABLED:
+                            logger.info(f"[CHAT] [req_{request_id}] 所有账户不可用，尝试自动注册...")
+                            if await auto_register_and_wait(AUTO_REGISTER_COUNT, AUTO_REGISTER_TIMEOUT, request_id):
+                                # 注册成功，重新尝试获取账户
+                                try:
+                                    account_manager = await multi_account_mgr.get_account(None, request_id)
+                                    google_session = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
+                                    await multi_account_mgr.set_session_cache(
+                                        conv_key,
+                                        account_manager.config.account_id,
+                                        google_session
+                                    )
+                                    is_new_conversation = True
+                                    logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 自动注册后新会话创建成功")
+                                    uptime_tracker.record_request("account_pool", True)
+                                    break
+                                except Exception as inner_e:
+                                    raise HTTPException(503, f"Auto-registration succeeded but session creation failed: {str(inner_e)[:100]}")
+                            else:
+                                raise HTTPException(503, "All accounts unavailable and auto-registration failed")
+                        else:
+                            raise e
+                    else:
+                        raise e
                 except Exception as e:
                     last_error = e
                     error_type = type(e).__name__
                     # 安全获取账户ID
-                    account_id = account_manager.config.account_id if 'account_manager' in locals() and account_manager else 'unknown'
+                    account_id = account_manager.config.account_id if account_manager else 'unknown'
                     logger.error(f"[CHAT] [req_{request_id}] 账户 {account_id} 创建会话失败 (尝试 {attempt + 1}/{max_account_tries}) - {error_type}: {str(e)}")
                     # 记录账号池状态（单个账户失败）
                     uptime_tracker.record_request("account_pool", False)
                     if attempt == max_account_tries - 1:
                         logger.error(f"[CHAT] [req_{request_id}] 所有账户均不可用")
-                        raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
+                        # 最后一次尝试失败，尝试自动注册
+                        if AUTO_REGISTER_ENABLED:
+                            logger.info(f"[CHAT] [req_{request_id}] 所有账户失败，尝试自动注册...")
+                            if await auto_register_and_wait(AUTO_REGISTER_COUNT, AUTO_REGISTER_TIMEOUT, request_id):
+                                try:
+                                    account_manager = await multi_account_mgr.get_account(None, request_id)
+                                    google_session = await create_google_session(account_manager, http_client, USER_AGENT, request_id)
+                                    await multi_account_mgr.set_session_cache(
+                                        conv_key,
+                                        account_manager.config.account_id,
+                                        google_session
+                                    )
+                                    is_new_conversation = True
+                                    logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 自动注册后新会话创建成功")
+                                    uptime_tracker.record_request("account_pool", True)
+                                    break
+                                except Exception as inner_e:
+                                    raise HTTPException(503, f"Auto-registration succeeded but session creation failed: {str(inner_e)[:100]}")
+                            else:
+                                raise HTTPException(503, f"All accounts unavailable and auto-registration failed: {str(last_error)[:100]}")
+                        else:
+                            raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
                     # 继续尝试下一个账户
+
+            # 确保 account_manager 和 google_session 已设置
+            if not account_manager or not google_session:
+                raise HTTPException(503, "Failed to acquire account session")
 
     # 提取用户消息内容用于日志
     if req.messages:

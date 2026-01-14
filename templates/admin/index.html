@@ -439,6 +439,36 @@
                                 </div>
                             </div>
 
+                            <!-- 自动注册配置 -->
+                            <div class="card">
+                                <h3>🤖 自动注册配置</h3>
+                                <div style="margin-top: 12px;">
+                                    <div class="setting-item">
+                                        <label style="display: flex; align-items: center; gap: 8px;">
+                                            <input type="checkbox" id="setting-auto-register-enabled" style="width: auto;" />
+                                            无可用账户时自动注册
+                                        </label>
+                                        <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
+                                            当所有账户不可用时，自动触发注册新账户
+                                        </div>
+                                    </div>
+                                    <div class="setting-item">
+                                        <label>自动注册数量</label>
+                                        <input type="number" id="setting-auto-register-count" min="1" max="10" />
+                                        <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
+                                            每次自动注册的账户数量（1-10）
+                                        </div>
+                                    </div>
+                                    <div class="setting-item">
+                                        <label>注册超时时间（秒）</label>
+                                        <input type="number" id="setting-auto-register-timeout" min="30" max="300" />
+                                        <div style="margin-top: 4px; font-size: 11px; color: #6b6b6b;">
+                                            等待注册完成的最长时间（30-300秒）
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- 公开展示配置 -->
                             <div class="card">
                                 <h3>🎨 公开展示配置</h3>

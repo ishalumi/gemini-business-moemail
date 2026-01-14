@@ -55,6 +55,10 @@ class RetryConfig(BaseModel):
     account_failure_threshold: int = Field(default=3, ge=1, le=10, description="账户失败阈值")
     rate_limit_cooldown_seconds: int = Field(default=600, ge=60, le=3600, description="429冷却时间（秒）")
     session_cache_ttl_seconds: int = Field(default=3600, ge=300, le=86400, description="会话缓存时间（秒）")
+    # 自动注册配置
+    auto_register_enabled: bool = Field(default=False, description="无可用账户时自动注册")
+    auto_register_count: int = Field(default=1, ge=1, le=10, description="自动注册账户数量")
+    auto_register_timeout: int = Field(default=120, ge=30, le=300, description="自动注册超时时间（秒）")
 
 
 class PublicDisplayConfig(BaseModel):
