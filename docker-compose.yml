@@ -1,6 +1,7 @@
 services:
-  gemini-api:
+  gemini-business:
     image: ghcr.io/ishalumi/gemini-business-moemail:latest
+    container_name: gemini-business
     # 如需本地构建，注释上面的 image 并取消下面的注释
     # build:
     #   context: .
