@@ -223,6 +223,7 @@ class RegisterService:
             
             # 配置 Chrome 选项（增加稳定性，减少崩溃）
             options = uc.ChromeOptions()
+            options.add_argument('--headless=new')  # 无头模式（容器环境必需）
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
