@@ -1,22 +1,13 @@
 # Dockerfile for Gemini Business API（带注册功能）
-# 使用 uv 管理依赖，包含 Chrome + Xvfb 支持注册功能
+# 使用 uv 管理依赖，包含 Chromium + ChromeDriver 支持注册功能
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# 先安装基础工具
+# 安装 Chromium、ChromeDriver 和必要的依赖（使用 Debian 官方源，更稳定）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    gnupg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 添加 Google Chrome 源
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-
-# 安装 Chrome、Xvfb 和必要的依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
+    chromium-driver \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -36,9 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
-    xvfb \
-    x11-utils \
-    google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 uv
@@ -63,22 +51,10 @@ RUN mkdir -p ./data/images
 # 声明数据卷
 VOLUME ["/app/data"]
 
-# 创建 Xvfb 启动脚本
-RUN printf '#!/bin/bash\n\
-rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null\n\
-Xvfb :99 -screen 0 1920x1080x24 &\n\
-sleep 1\n\
-export DISPLAY=:99\n\
-echo "Xvfb started on :99"\n\
-exec "$@"\n' > /app/start-xvfb.sh && chmod +x /app/start-xvfb.sh
-
-# 设置环境变量
-ENV DISPLAY=:99
-# 设置时区为东八区（北京时间）
+# 设置环境变量（Chromium 路径和 headless 模式）
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ENV TZ=Asia/Shanghai
-
-# 使用 Xvfb 启动脚本作为 entrypoint
-ENTRYPOINT ["/app/start-xvfb.sh"]
 
 # 启动主服务
 CMD ["uv", "run", "python", "-u", "main.py"]
