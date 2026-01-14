@@ -47,36 +47,72 @@ class GeminiAuthHelper:
     def __init__(self, config: GeminiAuthConfig):
         self.config = config
 
-    def get_verification_code(self, email: str, timeout: int = 60) -> Optional[str]:
-        """获取验证码（公共方法）"""
+    def get_verification_code(self, email: str, email_id: str, timeout: int = 60) -> Optional[str]:
+        """
+        获取验证码（MoeMail API）
+
+        Args:
+            email: 邮箱地址（用于日志）
+            email_id: MoeMail 邮箱 ID
+            timeout: 超时时间（秒）
+        """
+        import re
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            BeautifulSoup = None
+
         logger.info(f"⏳ 等待验证码 [{email}]...")
         start = time.time()
 
         while time.time() - start < timeout:
             try:
                 r = requests.get(
-                    f"{self.config.mail_api}/admin/mails?limit=20&offset=0",
-                    headers={"x-admin-auth": self.config.admin_key},
+                    f"{self.config.mail_api}/api/emails/{email_id}",
+                    headers={"X-API-Key": self.config.admin_key},
                     timeout=10,
                     verify=False
                 )
                 if r.status_code == 200:
-                    emails = r.json().get('results', {})
-                    for mail in emails:
-                        if mail.get("address") == email and mail.get("source") == self.config.google_mail:
-                            metadata = json.loads(mail["metadata"])
-                            return metadata["ai_extract"]["result"]
-            except:
-                pass
+                    data = r.json()
+                    messages = data.get('messages', [])
+                    for msg in messages:
+                        # 检查发件人是否为 Google
+                        sender = msg.get('from', '')
+                        if self.config.google_mail in sender or 'google' in sender.lower():
+                            # 从 HTML 或纯文本中提取验证码
+                            html = msg.get('html', '') or msg.get('content', '')
+                            if html:
+                                # 使用 BeautifulSoup 解析（如果可用）
+                                if BeautifulSoup:
+                                    soup = BeautifulSoup(html, 'html.parser')
+                                    text = soup.get_text()
+                                else:
+                                    # 简单去除 HTML 标签
+                                    text = re.sub(r'<[^>]+>', ' ', html)
+
+                                # 正则匹配 6 位数字验证码
+                                codes = re.findall(r'\b\d{6}\b', text)
+                                if codes:
+                                    logger.info(f"✅ 获取到验证码: {codes[0]}")
+                                    return codes[0]
+            except Exception as e:
+                logger.debug(f"获取邮件异常: {e}")
             time.sleep(2)
 
         logger.error(f"❌ 验证码超时 [{email}]")
         return None
 
-    def perform_email_verification(self, driver, wait, email: str) -> Dict[str, Any]:
+    def perform_email_verification(self, driver, wait, email: str, email_id: str) -> Dict[str, Any]:
         """
         执行邮箱验证流程（公共方法）
         从输入邮箱到验证码验证完成
+
+        Args:
+            driver: Selenium WebDriver 实例
+            wait: WebDriverWait 实例
+            email: 邮箱地址
+            email_id: MoeMail 邮箱 ID
 
         返回: {"success": bool, "error": str|None}
         """
@@ -99,7 +135,7 @@ class GeminiAuthHelper:
             time.sleep(2)
 
             # 3. 获取验证码
-            code = self.get_verification_code(email)
+            code = self.get_verification_code(email, email_id)
             if not code:
                 return {"success": False, "error": "验证码超时"}
 

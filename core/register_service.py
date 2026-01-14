@@ -108,12 +108,15 @@ class RegisterService:
         """生成随机字符串"""
         return "".join(random.sample(ascii_letters + digits, n))
     
-    def _create_email(self, domain: Optional[str] = None) -> Optional[str]:
+    def _create_email(self, domain: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
-        创建临时邮箱
+        创建临时邮箱 (MoeMail API)
 
         Args:
             domain: 指定域名，如果为 None 则从配置的域名数组随机选择
+
+        Returns:
+            {"id": "邮箱ID", "address": "邮箱地址"} 或 None
         """
         if not self.auth_config.mail_api or not self.auth_config.admin_key:
             logger.error("❌ 邮箱 API 未配置")
@@ -129,24 +132,31 @@ class RegisterService:
                 domain = random.choice(self.auth_config.email_domains)
 
             json_data = {
-                "enablePrefix": False,
                 "name": self._random_str(10),
+                "expiryTime": 3600000,  # 1小时过期
                 "domain": domain
             }
             r = requests.post(
-                f"{self.auth_config.mail_api}/admin/new_address",
-                headers={"x-admin-auth": self.auth_config.admin_key},
+                f"{self.auth_config.mail_api}/api/emails/generate",
+                headers={
+                    "X-API-Key": self.auth_config.admin_key,
+                    "Content-Type": "application/json"
+                },
                 json=json_data,
                 timeout=30,
                 verify=False
             )
             if r.status_code == 200:
-                return r.json()['address']
+                data = r.json()
+                return {
+                    "id": data["id"],
+                    "address": data.get("email") or data.get("address")
+                }
         except Exception as e:
             logger.error(f"❌ 创建邮箱失败: {e}")
         return None
 
-    def _get_email(self) -> Optional[str]:
+    def _get_email(self) -> Optional[Dict[str, str]]:
         """获取邮箱（优先从队列取，否则创建新邮箱）"""
         if self._email_queue:
             return self._email_queue.pop(0)
@@ -199,10 +209,13 @@ class RegisterService:
             from selenium.webdriver.common.keys import Keys
         except ImportError as e:
             return {"email": None, "success": False, "config": None, "error": f"Selenium 未安装: {e}"}
-        
-        email = self._get_email()
-        if not email:
+
+        email_data = self._get_email()
+        if not email_data:
             return {"email": None, "success": False, "config": None, "error": "无法创建邮箱"}
+
+        email = email_data["address"]
+        email_id = email_data["id"]
 
         driver = None
         try:
@@ -231,7 +244,7 @@ class RegisterService:
             time.sleep(2)
 
             # 2-6. 执行邮箱验证流程（使用公共方法）
-            verify_result = self.auth_helper.perform_email_verification(driver, wait, email)
+            verify_result = self.auth_helper.perform_email_verification(driver, wait, email, email_id)
             if not verify_result["success"]:
                 return {"email": email, "success": False, "config": None, "error": verify_result["error"]}
             

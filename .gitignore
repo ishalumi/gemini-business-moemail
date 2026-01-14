@@ -39,6 +39,9 @@ data/stats.json
 data/settings.yaml
 accounts.json
 
+# MoeMail 敏感文件
+moemail/
+
 # Generated files
 data/images/
 logs/
