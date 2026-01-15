@@ -134,11 +134,9 @@ class LoginService:
         返回: {"email": str, "success": bool, "config": dict|None, "error": str|None}
         """
         try:
-            # 使用标准 selenium（容器兼容性更好）
+            # 延迟导入 selenium
             import os
-            from selenium import webdriver
-            from selenium.webdriver.chrome.service import Service
-            from selenium.webdriver.chrome.options import Options
+            import undetected_chromedriver as uc
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support.ui import WebDriverWait
             from selenium.webdriver.support import expected_conditions as EC
@@ -149,32 +147,32 @@ class LoginService:
         try:
             logger.info(f"🔄 开始刷新登录: {email}")
 
-            # 配置 Chrome 选项（标准 selenium，容器兼容）
-            options = Options()
-            options.add_argument('--headless=new')
+            # 配置 Chrome 选项（增加稳定性，减少崩溃）
+            options = uc.ChromeOptions()
+            # 使用 Xvfb 虚拟显示，无需 headless 模式
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
             options.add_argument('--disable-software-rasterizer')
             options.add_argument('--disable-extensions')
             options.add_argument('--window-size=1920,1080')
+            # 增加内存限制，避免崩溃
+            options.add_argument('--js-flags=--max-old-space-size=512')
+            # 禁用一些可能导致崩溃的特性
             options.add_argument('--disable-background-networking')
             options.add_argument('--disable-default-apps')
             options.add_argument('--disable-sync')
 
-            # 从环境变量获取 Chrome 路径（容器中使用 Chromium）
-            chrome_bin = os.environ.get('CHROME_BIN')
+            # 构建 Chrome 启动参数，支持环境变量指定路径
+            chrome_kwargs = {"options": options, "use_subprocess": True}
+            chrome_bin = os.getenv("CHROME_BIN")
             if chrome_bin:
-                options.binary_location = chrome_bin
-
-            # 从环境变量获取 ChromeDriver 路径
-            chromedriver_path = os.environ.get('CHROMEDRIVER_PATH')
+                chrome_kwargs["browser_executable_path"] = chrome_bin
+            chromedriver_path = os.getenv("CHROMEDRIVER_PATH")
             if chromedriver_path:
-                service = Service(executable_path=chromedriver_path)
-                driver = webdriver.Chrome(service=service, options=options)
-            else:
-                driver = webdriver.Chrome(options=options)
+                chrome_kwargs["driver_executable_path"] = chromedriver_path
 
+            driver = uc.Chrome(**chrome_kwargs)
             wait = WebDriverWait(driver, 30)
 
             # 1. 访问登录页
