@@ -5,11 +5,15 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 安装 Chromium、ChromeDriver、Xvfb、tini 和必要的依赖
+# 添加构建工具以支持 ARM64 架构编译 Python 包（如 cffi）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
     xvfb \
     tini \
+    gcc \
+    python3-dev \
+    libffi-dev \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \

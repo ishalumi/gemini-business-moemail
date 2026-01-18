@@ -14,6 +14,7 @@ license: mit
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Docker Image](https://img.shields.io/badge/Docker-ghcr.io-blue?logo=docker)](https://ghcr.io/ishalumi/gemini-business-moemail)
 
 **快速部署到 HuggingFace Spaces:**
 
@@ -108,33 +109,80 @@ license: mit
    API_KEY=your_api_key
    LOGO_URL=https://your-domain.com/logo.png
    CHAT_URL=https://your-chat-app.com
-   MAIL_API=https://cloudflare_temp_email.xxx
-   MAIL_ADMIN_KEY=cloudflare-mail-admin-key
-   # 注意：EMAIL_DOMAIN 支持多个域名，用英文逗号分隔
+   MAIL_API=https://your-moemail-api.com
+   MAIL_ADMIN_KEY=moemail-admin-key
+   # 注意：EMAIL_DOMAIN 使用 JSON 数组格式
    EMAIL_DOMAIN=["domain1.com","domain2.org","domain3.net"]
-   
+
    ```
 5. 等待构建完成（约 2-3 分钟）
 6. 访问你的 Space URL 开始使用
 
-### 方法二: Docker 部署
+### 方法二: Docker 部署（推荐）
 
+项目提供预构建的 Docker 镜像，推送到 GitHub Container Registry，无需本地构建。
+
+#### 使用 Docker Compose（推荐）
+
+**x86_64 架构（Intel/AMD）**：
+```bash
+# 1. 创建项目目录
+mkdir gemini-business && cd gemini-business
+
+# 2. 下载配置文件
+curl -O https://raw.githubusercontent.com/ishalumi/gemini-business-moemail/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/ishalumi/gemini-business-moemail/main/.env.example
+mv .env.example .env
+
+# 3. 编辑 docker-compose.yml，取消 image 行的注释
+# 4. 编辑 .env 文件，填入实际配置
+# 5. 启动服务
+docker compose up -d
+```
+
+**ARM64 架构（树莓派、Apple Silicon、AWS Graviton）**：
 ```bash
 # 1. 克隆项目
-git clone https://github.com/YOUR_USERNAME/gemini-business2api.git
-cd gemini-business2api
+git clone https://github.com/ishalumi/gemini-business-moemail.git
+cd gemini-business-moemail
 
-# 2. 构建并运行
-docker build -t gemini-business2api .
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，填入实际配置
+
+# 3. 本地构建并启动（docker-compose.yml 已配置为本地构建）
+docker compose up -d --build
+
+# 首次构建约需 5-10 分钟，请耐心等待
+```
+
+#### 使用 Docker 命令
+
+```bash
 docker run -d \
+  --name gemini-business \
   -p 7860:7860 \
+  -v ./data:/app/data \
   -e ACCOUNTS_CONFIG='[{"secure_c_ses":"your_cookie","csesidx":"your_idx","config_id":"your_config"}]' \
   -e PATH_PREFIX=path_prefix \
   -e ADMIN_KEY=your_admin_key \
   -e API_KEY=your_api_key \
-  -e LOGO_URL=https://your-domain.com/logo.png \
-  -e CHAT_URL=https://your-chat-app.com \
-  gemini-business2api
+  -e MAIL_API=https://your-moemail-api.com \
+  -e MAIL_ADMIN_KEY=your-mail-admin-key \
+  -e EMAIL_DOMAIN='["domain1.com","domain2.org"]' \
+  ghcr.io/ishalumi/gemini-business-moemail:latest
+```
+
+#### 本地构建（可选）
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/ishalumi/gemini-business-moemail.git
+cd gemini-business-moemail
+
+# 2. 修改 docker-compose.yml，注释 image 行并取消 build 注释
+# 3. 构建并运行
+docker compose up -d --build
 ```
 
 ### 方法三: 本地运行
@@ -189,12 +237,12 @@ ACCOUNT_FAILURE_THRESHOLD=3    # 账户失败阈值，达到后熔断（默认3�
 RATE_LIMIT_COOLDOWN_SECONDS=600 # 429限流冷却时间，秒（默认600=10分钟）
 SESSION_CACHE_TTL_SECONDS=3600 # 会话缓存过期时间，秒（默认3600=1小时）
 
-# 自动注册配置（必须，需要 Docker 部署）
+# 自动注册配置（需要 Docker 部署）
 LOGIN_URL=https://auth.business.gemini.google/login?continueUrl=...  # Google 登录入口
 GOOGLE_MAIL=noreply-googlecloud@google.com                          # Google 验证码发件邮箱
-MAIL_API=https://your-temp-mail-api.com                             # 临时邮箱 API 地址
-MAIL_ADMIN_KEY=your-mail-admin-key                                  # 邮箱 API 管理密钥
-EMAIL_DOMAIN=domain1.com,domain2.org                                # 邮箱域名（逗号分隔）
+MAIL_API=https://your-moemail-api.com                               # MoeMail 邮箱服务 API 地址
+MAIL_ADMIN_KEY=your-mail-admin-key                                  # MoeMail API 管理密钥
+EMAIL_DOMAIN=["domain1.com","domain2.org"]                          # 邮箱域名（JSON 数组格式）
 ```
 
 ### 重试机制说明
@@ -217,9 +265,9 @@ EMAIL_DOMAIN=domain1.com,domain2.org                                # 邮箱域�
 |--------|------|------|
 | `LOGIN_URL` | Google Business 登录入口 URL | 完整的登录链接 |
 | `GOOGLE_MAIL` | Google 验证码发件邮箱 | `noreply-googlecloud@google.com` |
-| `MAIL_API` | 临时邮箱服务 API 地址 | Cloudflare Worker 邮箱服务 |
-| `MAIL_ADMIN_KEY` | 邮箱 API 管理密钥 | 用于创建和查询临时邮箱 |
-| `EMAIL_DOMAIN` | 邮箱域名列表 | 多个域名用逗号分隔 |
+| `MAIL_API` | MoeMail 邮箱服务 API 地址 | MoeMail 部署地址 |
+| `MAIL_ADMIN_KEY` | MoeMail API 管理密钥 | 用于创建和查询临时邮箱 |
+| `EMAIL_DOMAIN` | 邮箱域名列表 | JSON 数组格式，如 `["domain1.com"]` |
 
 **使用方法**：
 1. 配置好以上环境变量

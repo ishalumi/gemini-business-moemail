@@ -1,11 +1,14 @@
 services:
   gemini-business:
-    image: ghcr.io/ishalumi/gemini-business-moemail:latest
+    # 使用预构建镜像（x86_64）
+    # image: ghcr.io/ishalumi/gemini-business-moemail:latest
+
+    # ARM64 本地构建（推荐）
+    build:
+      context: .
+      dockerfile: Dockerfile
+
     container_name: gemini-business
-    # 如需本地构建，注释上面的 image 并取消下面的注释
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
     ports:
       - "7860:7860"
     volumes:
