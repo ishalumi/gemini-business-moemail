@@ -1,4 +1,4 @@
-import json, time, os, asyncio, uuid, ssl, re, yaml, shutil
+import json, time, os, asyncio, uuid, ssl, re, yaml, shutil, csv, io
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union, Dict, Any
 from pathlib import Path
@@ -32,6 +32,7 @@ ACCOUNTS_FILE = os.path.join(DATA_DIR, "accounts.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.yaml")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
 IMAGE_DIR = os.path.join(DATA_DIR, "images")
+REQUEST_AUDIT_FILE = os.path.join(DATA_DIR, "request_audit.jsonl")
 
 # 确保图片目录存在
 os.makedirs(IMAGE_DIR, exist_ok=True)
@@ -105,6 +106,7 @@ log_lock = Lock()
 
 # 统计数据持久化
 stats_lock = asyncio.Lock()  # 改为异步锁
+request_audit_lock = asyncio.Lock()
 
 async def load_stats():
     """加载统计数据（异步）"""
@@ -166,6 +168,7 @@ API_KEY = config.basic.api_key
 PATH_PREFIX = config.security.path_prefix
 ADMIN_KEY = config.security.admin_key
 PROXY = config.basic.proxy
+TLS_VERIFY = config.basic.tls_verify
 BASE_URL = config.basic.base_url
 SESSION_SECRET_KEY = config.security.session_secret_key
 SESSION_EXPIRE_HOURS = config.session.expire_hours
@@ -203,7 +206,7 @@ MODEL_MAPPING = {
 # ---------- HTTP 客户端 ----------
 http_client = httpx.AsyncClient(
     proxy=PROXY or None,
-    verify=False,
+    verify=TLS_VERIFY,
     http2=False,
     timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
     limits=httpx.Limits(
@@ -357,12 +360,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ---------- Session 中间件配置 ----------
 from starlette.middleware.sessions import SessionMiddleware
+session_https_only_env = os.getenv("SESSION_HTTPS_ONLY")
+if session_https_only_env is None:
+    SESSION_HTTPS_ONLY = os.getenv("ENV") != "development"
+else:
+    SESSION_HTTPS_ONLY = session_https_only_env.strip().lower() not in ["0", "false", "no", "off"]
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,
     max_age=SESSION_EXPIRE_HOURS * 3600,  # 转换为秒
     same_site="lax",
-    https_only=False  # 本地开发可设为False，生产环境建议True
+    https_only=SESSION_HTTPS_ONLY
 )
 
 # ---------- Uptime 追踪中间件 ----------
@@ -667,6 +675,51 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 1.0
 
+def build_request_audit_params(req: ChatRequest) -> dict:
+    params = {
+        "stream": req.stream,
+        "temperature": req.temperature,
+        "top_p": req.top_p,
+        "messages_count": len(req.messages)
+    }
+    multimodal_count = sum(1 for m in req.messages if isinstance(m.content, list))
+    if multimodal_count:
+        params["multimodal_messages"] = multimodal_count
+    return params
+
+async def append_request_audit_record(client_ip: str, model: str, params: dict) -> None:
+    record = {"ip": client_ip, "model": model, "params": params}
+    line = json.dumps(record, ensure_ascii=False)
+    async with request_audit_lock:
+        async with aiofiles.open(REQUEST_AUDIT_FILE, "a", encoding="utf-8") as f:
+            await f.write(line + "\n")
+
+def iter_request_audit_csv():
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ip", "model", "params"])
+    yield output.getvalue()
+    output.seek(0)
+    output.truncate(0)
+
+    if not os.path.exists(REQUEST_AUDIT_FILE):
+        return
+
+    with open(REQUEST_AUDIT_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            params_json = json.dumps(record.get("params", {}), ensure_ascii=False)
+            writer.writerow([record.get("ip", ""), record.get("model", ""), params_json])
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
 def create_chunk(id: str, created: int, model: str, delta: dict, finish_reason: Union[str, None]) -> str:
     chunk = {
         "id": id,
@@ -915,6 +968,7 @@ async def admin_get_settings(request: Request):
             "api_key": config.basic.api_key,
             "base_url": config.basic.base_url,
             "proxy": config.basic.proxy,
+            "tls_verify": config.basic.tls_verify,
             "mail_api": config.basic.mail_api,
             "mail_admin_key": config.basic.mail_admin_key,
             "google_mail": config.basic.google_mail,
@@ -949,7 +1003,7 @@ async def admin_get_settings(request: Request):
 @require_login()
 async def admin_update_settings(request: Request, new_settings: dict = Body(...)):
     """更新系统设置"""
-    global API_KEY, PROXY, BASE_URL, LOGO_URL, CHAT_URL
+    global API_KEY, PROXY, TLS_VERIFY, BASE_URL, LOGO_URL, CHAT_URL
     global IMAGE_GENERATION_ENABLED, IMAGE_GENERATION_MODELS
     global MAX_NEW_SESSION_TRIES, MAX_REQUEST_RETRIES, MAX_ACCOUNT_SWITCH_TRIES
     global ACCOUNT_FAILURE_THRESHOLD, RATE_LIMIT_COOLDOWN_SECONDS, SESSION_CACHE_TTL_SECONDS
@@ -959,6 +1013,7 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
     try:
         # 保存旧配置用于对比
         old_proxy = PROXY
+        old_tls_verify = TLS_VERIFY
         old_retry_config = {
             "account_failure_threshold": ACCOUNT_FAILURE_THRESHOLD,
             "rate_limit_cooldown_seconds": RATE_LIMIT_COOLDOWN_SECONDS,
@@ -974,6 +1029,7 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         # 更新全局变量（实时生效）
         API_KEY = config.basic.api_key
         PROXY = config.basic.proxy
+        TLS_VERIFY = config.basic.tls_verify
         BASE_URL = config.basic.base_url
         LOGO_URL = config.public_display.logo_url
         CHAT_URL = config.public_display.chat_url
@@ -991,12 +1047,12 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         SESSION_EXPIRE_HOURS = config.session.expire_hours
 
         # 检查是否需要重建 HTTP 客户端（代理变化）
-        if old_proxy != PROXY:
-            logger.info(f"[CONFIG] 代理配置已变化，重建 HTTP 客户端")
+        if old_proxy != PROXY or old_tls_verify != TLS_VERIFY:
+            logger.info(f"[CONFIG] 代理或TLS校验配置已变化，重建 HTTP 客户端")
             await http_client.aclose()  # 关闭旧客户端
             http_client = httpx.AsyncClient(
                 proxy=PROXY or None,
-                verify=False,
+                verify=TLS_VERIFY,
                 http2=False,
                 timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=60.0),
                 limits=httpx.Limits(
@@ -1031,8 +1087,8 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
 # ---------- 注册服务 API ----------
 @app.post("/admin/register/start")
 @require_login()
-async def admin_start_register(request: Request, count: int = Body(default=1, ge=1, le=50), domain: Optional[str] = Body(default=None)):
-    """启动注册任务"""
+async def admin_start_register(request: Request, count: int = Body(default=1, ge=1), domain: Optional[str] = Body(default=None)):
+    """启动注册任务（无数量上限）"""
     if not _register_service_available:
         raise HTTPException(503, "注册服务不可用（需要 Chrome 环境）")
 
@@ -1215,6 +1271,13 @@ async def admin_logs_html_route(request: Request):
     """返回美化的 HTML 日志查看界面"""
     return templates.TemplateResponse("admin/logs.html", {"request": request})
 
+@app.get("/admin/request-audit/csv")
+@require_login()
+async def admin_export_request_audit_csv(request: Request):
+    """导出请求审计记录 CSV"""
+    headers = {"Content-Disposition": "attachment; filename=request_audit.csv"}
+    return StreamingResponse(iter_request_audit_csv(), media_type="text/csv", headers=headers)
+
 # 带PATH_PREFIX的管理API端点（如果配置了PATH_PREFIX）
 if PATH_PREFIX:
     @app.get(f"/{PATH_PREFIX}/health")
@@ -1273,6 +1336,11 @@ if PATH_PREFIX:
     @require_login()
     async def admin_logs_html_route_prefixed(request: Request):
         return await admin_logs_html_route(request=request)
+
+    @app.get(f"/{PATH_PREFIX}/request-audit/csv")
+    @require_login()
+    async def admin_export_request_audit_csv_prefixed(request: Request):
+        return await admin_export_request_audit_csv(request=request)
 
     @app.get(f"/{PATH_PREFIX}/settings")
     @require_login()
@@ -1347,6 +1415,15 @@ async def chat_impl(
         client_ip = client_ip.split(",")[0].strip()
     else:
         client_ip = request.client.host if request.client else "unknown"
+
+    try:
+        await append_request_audit_record(
+            client_ip,
+            req.model,
+            build_request_audit_params(req)
+        )
+    except Exception as e:
+        logger.warning(f"[AUDIT] [req_{request_id}] 请求记录失败: {str(e)[:100]}")
 
     # 记录请求统计
     async with stats_lock:
@@ -1484,8 +1561,22 @@ async def chat_impl(
     if req.messages:
         last_content = req.messages[-1].content
         if isinstance(last_content, str):
-            # 显示完整消息，但限制在500字符以内
-            if len(last_content) > 500:
+            # 脱敏处理：检测敏感协议和域名
+            sensitive_patterns = [
+                r'vless://',
+                r'vmess://',
+                r'trojan://',
+                r'hysteria2?://',
+                r'ss://',
+                r'ssr://',
+                r'@[\w\.-]+:\d+',  # 匹配 @domain:port
+            ]
+
+            is_sensitive = any(re.search(pattern, last_content, re.IGNORECASE) for pattern in sensitive_patterns)
+
+            if is_sensitive:
+                preview = "[包含代理配置信息，已脱敏]"
+            elif len(last_content) > 500:
                 preview = last_content[:500] + "...(已截断)"
             else:
                 preview = last_content
@@ -1496,9 +1587,8 @@ async def chat_impl(
 
     # 记录请求基本信息
     logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 收到请求: {req.model} | {len(req.messages)}条消息 | stream={req.stream}")
-
-    # 单独记录用户消息内容（方便查看）
-    logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 用户消息: {preview}")
+    # 用户消息不记录到日志，避免敏感信息泄露
+    # logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 用户消息: {preview}")
 
     # 3. 解析请求内容
     last_text, current_images = await parse_last_message(req.messages, http_client, request_id)
@@ -1715,8 +1805,7 @@ async def chat_impl(
     logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 非流式响应完成")
 
     # 记录响应内容（限制500字符）
-    response_preview = full_content[:500] + "...(已截断)" if len(full_content) > 500 else full_content
-    logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] AI响应: {response_preview}")
+    logger.info(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] AI响应长度: {len(full_content)} 字符")
 
     return {
         "id": chat_id,
@@ -1767,9 +1856,9 @@ def parse_images_from_response(data_list: list) -> tuple[list, str]:
 async def stream_chat_generator(session: str, text_content: str, file_ids: List[str], model_name: str, chat_id: str, created_time: int, account_manager: AccountManager, is_stream: bool = True, request_id: str = "", request: Request = None):
     start_time = time.time()
 
-    # 记录发送给API的内容
-    text_preview = text_content[:500] + "...(已截断)" if len(text_content) > 500 else text_content
-    logger.info(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 发送内容: {text_preview}")
+    # 记录发送给API的内容（脱敏处理）
+    # 为了安全，不记录实际内容，只记录长度
+    logger.info(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 发送内容长度: {len(text_content)} 字符")
     if file_ids:
         logger.info(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 附带文件: {len(file_ids)}个")
 
@@ -1974,54 +2063,24 @@ async def get_public_stats():
             "load_color": load_color
         }
 
-@app.get("/public/log")
-async def get_public_logs(request: Request, limit: int = 100):
-    """获取脱敏后的日志（JSON格式）"""
+@app.get("/admin/log")
+@require_login()
+async def get_admin_logs(request: Request, limit: int = 100):
+    """获取日志（需要管理员认证）"""
     try:
-        # 基于IP的访问统计（24小时内去重）
-        # 优先从 X-Forwarded-For 获取真实IP（处理代理情况）
-        client_ip = request.headers.get("x-forwarded-for")
-        if client_ip:
-            # X-Forwarded-For 可能包含多个IP，取第一个
-            client_ip = client_ip.split(",")[0].strip()
-        else:
-            # 没有代理时使用直连IP
-            client_ip = request.client.host if request.client else "unknown"
-
-        current_time = time.time()
-
-        async with stats_lock:
-            # 清理24小时前的IP记录
-            if "visitor_ips" not in global_stats:
-                global_stats["visitor_ips"] = {}
-
-            expired_ips = [
-                ip for ip, timestamp in global_stats["visitor_ips"].items()
-                if current_time - timestamp > 86400  # 24小时
-            ]
-            for ip in expired_ips:
-                del global_stats["visitor_ips"][ip]
-
-            # 记录新访问（24小时内同一IP只计数一次）
-            if client_ip not in global_stats["visitor_ips"]:
-                global_stats["visitor_ips"][client_ip] = current_time
-
-            # 同步访问者计数（清理后的实际数量）
-            global_stats["total_visitors"] = len(global_stats["visitor_ips"])
-            await save_stats(global_stats)
-
         sanitized_logs = get_sanitized_logs(limit=min(limit, 1000))
         return {
             "total": len(sanitized_logs),
             "logs": sanitized_logs
         }
     except Exception as e:
-        logger.error(f"[LOG] 获取公开日志失败: {e}")
+        logger.error(f"[LOG] 获取日志失败: {e}")
         return {"total": 0, "logs": [], "error": str(e)}
 
-@app.get("/public/log/html")
-async def get_public_logs_html(request: Request):
-    """公开的脱敏日志查看器"""
+@app.get("/admin/log/html")
+@require_login()
+async def get_admin_logs_html(request: Request):
+    """管理员日志查看器（需要认证）"""
     return templates.TemplateResponse("public/logs.html", {
         "request": request,
         "logo_url": LOGO_URL,

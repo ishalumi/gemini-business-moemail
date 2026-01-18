@@ -110,7 +110,7 @@ class RegisterService:
     
     def _create_email(self, domain: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
-        创建临时邮箱 (MoeMail API)
+        创建临时邮箱 (支持 MoeMail 和 GPTMail API)
 
         Args:
             domain: 指定域名，如果为 None 则从配置的域名数组随机选择
@@ -131,27 +131,58 @@ class RegisterService:
             if not domain:
                 domain = random.choice(self.auth_config.email_domains)
 
-            json_data = {
-                "name": self._random_str(10),
-                "expiryTime": 3600000,  # 1小时过期
-                "domain": domain
-            }
-            r = requests.post(
-                f"{self.auth_config.mail_api}/api/emails/generate",
-                headers={
-                    "X-API-Key": self.auth_config.admin_key,
-                    "Content-Type": "application/json"
-                },
-                json=json_data,
-                timeout=30,
-                verify=False
-            )
-            if r.status_code == 200:
-                data = r.json()
-                return {
-                    "id": data["id"],
-                    "address": data.get("email") or data.get("address")
+            # 检测 API 类型（根据 URL 判断）
+            is_gptmail = "chatgpt.org.uk" in self.auth_config.mail_api or "gpt-mail" in self.auth_config.mail_api.lower()
+
+            if is_gptmail:
+                # GPTMail API
+                json_data = {
+                    "prefix": self._random_str(10),
+                    "domain": domain
                 }
+                r = requests.post(
+                    f"{self.auth_config.mail_api}/api/generate-email",
+                    headers={
+                        "X-API-Key": self.auth_config.admin_key,
+                        "Content-Type": "application/json"
+                    },
+                    json=json_data,
+                    timeout=30,
+                    verify=self.auth_config.tls_verify
+                )
+                if r.status_code == 200:
+                    response = r.json()
+                    if response.get("success"):
+                        email_address = response["data"]["email"]
+                        return {
+                            "id": email_address,  # GPTMail 使用邮箱地址作为 ID
+                            "address": email_address
+                        }
+                    else:
+                        logger.error(f"❌ GPTMail 创建邮箱失败: {response.get('error')}")
+            else:
+                # MoeMail API
+                json_data = {
+                    "name": self._random_str(10),
+                    "expiryTime": 3600000,  # 1小时过期
+                    "domain": domain
+                }
+                r = requests.post(
+                    f"{self.auth_config.mail_api}/api/emails/generate",
+                    headers={
+                        "X-API-Key": self.auth_config.admin_key,
+                        "Content-Type": "application/json"
+                    },
+                    json=json_data,
+                    timeout=30,
+                    verify=self.auth_config.tls_verify
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    return {
+                        "id": data["id"],
+                        "address": data.get("email") or data.get("address")
+                    }
         except Exception as e:
             logger.error(f"❌ 创建邮箱失败: {e}")
         return None

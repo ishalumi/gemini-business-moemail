@@ -27,6 +27,7 @@ class GeminiAuthConfig:
         self.email_domains = config.basic.email_domain  # 改为数组
         self.google_mail = config.basic.google_mail
         self.login_url = config.security.login_url
+        self.tls_verify = config.basic.tls_verify
 
     def validate(self) -> bool:
         """验证配置是否完整"""
@@ -65,37 +66,74 @@ class GeminiAuthHelper:
         logger.info(f"⏳ 等待验证码 [{email}]...")
         start = time.time()
 
+        # 检测 API 类型
+        is_gptmail = "chatgpt.org.uk" in self.config.mail_api or "gpt-mail" in self.config.mail_api.lower()
+
         while time.time() - start < timeout:
             try:
-                r = requests.get(
-                    f"{self.config.mail_api}/api/emails/{email_id}",
-                    headers={"X-API-Key": self.config.admin_key},
-                    timeout=10,
-                    verify=False
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    messages = data.get('messages', [])
-                    for msg in messages:
-                        # 检查发件人是否为 Google（兼容 from 和 from_address 字段）
-                        sender = msg.get('from_address', '') or msg.get('from', '')
-                        if self.config.google_mail in sender or 'google' in sender.lower():
-                            # 从 HTML 或纯文本中提取验证码
-                            html = msg.get('html', '') or msg.get('content', '')
-                            if html:
-                                # 使用 BeautifulSoup 解析（如果可用）
-                                if BeautifulSoup:
-                                    soup = BeautifulSoup(html, 'html.parser')
-                                    text = soup.get_text()
-                                else:
-                                    # 简单去除 HTML 标签
-                                    text = re.sub(r'<[^>]+>', ' ', html)
+                if is_gptmail:
+                    # GPTMail API
+                    r = requests.get(
+                        f"{self.config.mail_api}/api/emails?email={email}",
+                        headers={"X-API-Key": self.config.admin_key},
+                        timeout=10,
+                        verify=self.config.tls_verify
+                    )
+                    if r.status_code == 200:
+                        response = r.json()
+                        if response.get("success"):
+                            messages = response["data"].get("emails", [])
+                            for msg in messages:
+                                # 检查发件人是否为 Google
+                                sender = msg.get('from_address', '')
+                                if self.config.google_mail in sender or 'google' in sender.lower():
+                                    # 从 HTML 或纯文本中提取验证码
+                                    html = msg.get('html_content', '') or msg.get('content', '')
+                                    if html:
+                                        # 使用 BeautifulSoup 解析（如果可用）
+                                        if BeautifulSoup:
+                                            soup = BeautifulSoup(html, 'html.parser')
+                                            text = soup.get_text()
+                                        else:
+                                            # 简单去除 HTML 标签
+                                            text = re.sub(r'<[^>]+>', ' ', html)
 
-                                # 正则匹配 6 位验证码（数字或字母）
-                                codes = re.findall(r'\b[A-Z0-9]{6}\b', text)
-                                if codes:
-                                    logger.info(f"✅ 获取到验证码: {codes[0]}")
-                                    return codes[0]
+                                        # 正则匹配 6 位验证码（数字或字母）
+                                        codes = re.findall(r'\b[A-Z0-9]{6}\b', text)
+                                        if codes:
+                                            logger.info(f"✅ 获取到验证码: {codes[0]}")
+                                            return codes[0]
+                else:
+                    # MoeMail API
+                    r = requests.get(
+                        f"{self.config.mail_api}/api/emails/{email_id}",
+                        headers={"X-API-Key": self.config.admin_key},
+                        timeout=10,
+                        verify=self.config.tls_verify
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        messages = data.get('messages', [])
+                        for msg in messages:
+                            # 检查发件人是否为 Google（兼容 from 和 from_address 字段）
+                            sender = msg.get('from_address', '') or msg.get('from', '')
+                            if self.config.google_mail in sender or 'google' in sender.lower():
+                                # 从 HTML 或纯文本中提取验证码
+                                html = msg.get('html', '') or msg.get('content', '')
+                                if html:
+                                    # 使用 BeautifulSoup 解析（如果可用）
+                                    if BeautifulSoup:
+                                        soup = BeautifulSoup(html, 'html.parser')
+                                        text = soup.get_text()
+                                    else:
+                                        # 简单去除 HTML 标签
+                                        text = re.sub(r'<[^>]+>', ' ', html)
+
+                                    # 正则匹配 6 位验证码（数字或字母）
+                                    codes = re.findall(r'\b[A-Z0-9]{6}\b', text)
+                                    if codes:
+                                        logger.info(f"✅ 获取到验证码: {codes[0]}")
+                                        return codes[0]
             except Exception as e:
                 logger.debug(f"获取邮件异常: {e}")
             time.sleep(2)
@@ -119,10 +157,17 @@ class GeminiAuthHelper:
         try:
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.common.action_chains import ActionChains
+
+            # 0. 激活页面焦点（解决 headless 模式下输入无效的问题）
+            driver.execute_script("document.body.click();")
+            time.sleep(0.3)
 
             # 1. 输入邮箱
             inp = wait.until(EC.element_to_be_clickable((By.XPATH, self.XPATH["email_input"])))
-            inp.click()
+            # 使用 ActionChains 确保点击生效
+            ActionChains(driver).move_to_element(inp).click().perform()
+            time.sleep(0.2)
             inp.clear()
             for c in email:
                 inp.send_keys(c)

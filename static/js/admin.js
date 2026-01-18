@@ -264,6 +264,7 @@ let currentConfig = null;
                     document.getElementById('setting-api-key').value = settings.basic?.api_key || '';
                     document.getElementById('setting-base-url').value = settings.basic?.base_url || '';
                     document.getElementById('setting-proxy').value = settings.basic?.proxy || '';
+                    document.getElementById('setting-tls-verify').checked = settings.basic?.tls_verify ?? true;
 
                     // 临时邮箱配置
                     document.getElementById('setting-mail-api').value = settings.basic?.mail_api || '';
@@ -315,6 +316,7 @@ let currentConfig = null;
                             api_key: document.getElementById('setting-api-key').value,
                             base_url: document.getElementById('setting-base-url').value,
                             proxy: document.getElementById('setting-proxy').value,
+                            tls_verify: document.getElementById('setting-tls-verify').checked,
                             mail_api: document.getElementById('setting-mail-api').value,
                             mail_admin_key: document.getElementById('setting-mail-admin-key').value,
                             google_mail: document.getElementById('setting-google-mail').value,

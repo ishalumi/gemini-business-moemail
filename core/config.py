@@ -30,6 +30,7 @@ class BasicConfig(BaseModel):
     api_key: str = Field(default="", description="API访问密钥（留空则公开访问）")
     base_url: str = Field(default="", description="服务器URL（留空则自动检测）")
     proxy: str = Field(default="", description="代理地址")
+    tls_verify: bool = Field(default=True, description="是否验证TLS证书")
     google_mail: str = Field(default="noreply-googlecloud@google.com", description="谷歌发件邮箱地址")
     mail_api: str = Field(default="", description="临时邮箱API地址")
     mail_admin_key: str = Field(default="", description="临时邮箱管理员密钥")
@@ -57,7 +58,7 @@ class RetryConfig(BaseModel):
     session_cache_ttl_seconds: int = Field(default=3600, ge=300, le=86400, description="会话缓存时间（秒）")
     # 自动注册配置
     auto_register_enabled: bool = Field(default=False, description="无可用账户时自动注册")
-    auto_register_count: int = Field(default=1, ge=1, le=10, description="自动注册账户数量")
+    auto_register_count: int = Field(default=1, ge=1, description="自动注册账户数量（无上限）")
     auto_register_timeout: int = Field(default=120, ge=30, le=300, description="自动注册超时时间（秒）")
 
 
@@ -149,10 +150,19 @@ class ConfigManager:
             else:
                 email_domain_value = []
 
+        tls_verify_value = basic_data.get("tls_verify")
+        if tls_verify_value is None:
+            tls_verify_value = os.getenv("TLS_VERIFY")
+        if isinstance(tls_verify_value, str):
+            tls_verify_value = tls_verify_value.strip().lower() not in ["0", "false", "no", "off"]
+        if tls_verify_value is None:
+            tls_verify_value = True
+
         basic_config = BasicConfig(
             api_key=basic_data.get("api_key") or os.getenv("API_KEY", ""),
             base_url=basic_data.get("base_url") or os.getenv("BASE_URL", ""),
             proxy=basic_data.get("proxy") or os.getenv("PROXY", ""),
+            tls_verify=tls_verify_value,
             google_mail=basic_data.get("google_mail") or os.getenv("GOOGLE_MAIL", ""),
             mail_api=basic_data.get("mail_api") or os.getenv("MAIL_API", ""),
             mail_admin_key=basic_data.get("mail_admin_key") or os.getenv("MAIL_ADMIN_KEY", ""),
